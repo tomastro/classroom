@@ -4,64 +4,90 @@ const test = `<div class="d4Fe0d i8Wprc" id="custom-files-container"><div class=
      <div class="riU7le FHXi2c" id="files"><div class="MM30Lb"></div>   
     </div><div class="CHJgKd"><div class="VfPpkd-dgl2Hf-ppHlrf-sM5MNb" data-is-touch-wrapper="true"><div class="mUIrbf-LgbsSe mUIrbf-LgbsSe-OWXEXe-dgl2Hf mUIrbf-kSE8rc-FoKg4d-sLO9V-YoZ4jf uBUej" jscontroller="w9C4d" jsaction="click:h5M12e;clickmod:h5M12e;pointerdown:FEiYhc;pointerup:mF5Elf;pointerenter:EX0mI;pointerleave:vpvbp;pointercancel:xyn4sd;contextmenu:xexox; focus:h06R8; blur:zjh6rb;mlnRJb:fLiPzd" data-idom-class="uBUej"><span class="UTNHae" jscontroller="LBaJxb" jsname="m9ZlFb"></span><span jsname="Xr1QTb" class="mUIrbf-kBDsod-Rtc0Jf mUIrbf-kBDsod-Rtc0Jf-OWXEXe-M1Soyc"></span><span jsname="V67aGc" aria-hidden="true" class="mUIrbf-vQzf8d">View all</span><span jsname="UkTUqb" class="mUIrbf-kBDsod-Rtc0Jf mUIrbf-kBDsod-Rtc0Jf-OWXEXe-UbuQg"></span><a jsname="hSRGPd" class="mUIrbf-mRLv6 mUIrbf-RLmnJb" href="/a/not-turned-in/NjYwMzQ0NjE5Mzkw" aria-label="View all work"></a><span class="XjoK4b mUIrbf-UHGRz"></span></div></div></div></div></div>`;
 
-/* ---------- 2. クローン処理 ---------- */
-function updateFilesSection() {
-  const parent = document.querySelector(".iy4mWc");
-  if (!parent) return;
+let updateScheduled = false;
 
-  // コンテナがなければ作成して挿入
-  let container = document.querySelector("#custom-files-container");
-  if (!container) {
-    const tmp = document.createElement("div");
-    tmp.innerHTML = test;
-    container = tmp.firstElementChild;
-    parent.appendChild(container);
-  }
+function getVisiblePageRoot() {
+  return [...document.querySelectorAll(".iy4mWc")]
+    .find(el => el.offsetParent !== null);
+}
 
-  const filesEl = container.querySelector("#files");
-  if (!filesEl) return;
+function updateFilesSection(force = false) {
+  if (updateScheduled && !force) return;
+  updateScheduled = true;
 
-  // --- スタイルを直接JSで上書き (確実な方法) ---
-  filesEl.style.display = "contents";
-  // Classroom元のカードを取得（自分のコンテナ内にあるものは除外）
-  const originalCards = Array.from(document.querySelectorAll(".luto0c"))
-    .filter(card => !container.contains(card));
+  requestAnimationFrame(() => {
+    updateScheduled = false;
+    const pageRoot = getVisiblePageRoot();
 
-  // 無限増殖防止：既存のクローン数と元の数が同じならスキップ
-  if (filesEl.children.length === originalCards.length) return;
+    let container = document.querySelector("#custom-files-container");
+    if (!container) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = test;
+      container = tmp.firstElementChild;
+      pageRoot.appendChild(container);
+    }
 
-  console.log("Updating files...");
-  filesEl.innerHTML = ""; // クリア
+    const filesEl = container.querySelector("#files");
+    if (!filesEl) return;
 
-  originalCards.forEach(card => {
-    const clone = card.cloneNode(true);
-    // クローンしたカードの中にあるクリックイベント等を維持しつつ追加
-    filesEl.appendChild(clone);
-  });
-  const digitClassElements = document.querySelectorAll('.luto0c');
-  digitClassElements.forEach(el => {
-    el.style.marginBottom = "10px";
+    filesEl.style.display = "contents";
+
+    // 毎回「今この瞬間のカード」を取得
+    const originalCards = Array.from(
+      document.querySelectorAll(".luto0c")
+    ).filter(card =>
+      card.isConnected &&        // DOMに接続されている
+      card.offsetParent !== null // display:none でない
+    );
+
+
+    // 常に再描画（差分判定しない）
+    filesEl.replaceChildren(
+      ...originalCards.map(card => card.cloneNode(true))
+    );
+
+    // style 適用
+    const digitClassElements = document.querySelectorAll('.luto0c');
+    digitClassElements.forEach(el => { el.style.marginBottom = "10px"; });
+
+    console.log("Files section refreshed:", originalCards.length);
   });
 }
 
-/* ---------- 3. 監視設定 ---------- */
-// 自分の操作によるループを防ぐためのフラグ
-let isUpdating = false;
-
-const observer = new MutationObserver(() => {
-  if (isUpdating) return;
-
-  isUpdating = true;
-  updateFilesSection();
-  // 処理が終わった後、少し間を置いてから監視を再開（負荷対策）
-  setTimeout(() => { isUpdating = false; }, 500);
+// message ごとに必ず更新
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.action === "showFiles") {
+    updateFilesSection(true);
+  }
 });
 
-// 監視開始
-observer.observe(document.body, {
-  childList: true,
-  subtree: true
-});
 
-// 初回実行
-updateFilesSection();
+let observerStarted = false;
+
+function waitAndUpdateFiles() {
+  const pageRoot = document.querySelector(".iy4mWc");
+  const cards = document.querySelectorAll(".luto0c");
+
+  if (pageRoot && cards.length > 0) {
+    updateFilesSection(true);
+    return true;
+  }
+  return false;
+}
+
+function startObserver() {
+  if (observerStarted) return;
+  observerStarted = true;
+
+  const observer = new MutationObserver(() => {
+    if (waitAndUpdateFiles()) {
+      observer.disconnect(); // 成功したら停止
+      observerStarted = false;
+    }
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+}
